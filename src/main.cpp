@@ -18,7 +18,7 @@ constexpr uint16_t SVC_APPLE_FIND_MY     = 0xFD6F; // Apple Find My
 constexpr uint16_t SVC_SAMSUNG_FIND      = 0xFD5A; // Samsung Find
 
 // Filter by Manufacturer type:
-constexpr bool FILTER_APPLE   = false;  // Apple (AirTag, Find My)
+constexpr bool FILTER_APPLE   = true;  // Apple (AirTag, Find My)
 constexpr bool FILTER_GOOGLE  = true;  // Google (Fast Pair)
 constexpr bool FILTER_SAMSUNG = true;  // Samsung (SmartTag)
 constexpr bool FILTER_XIAOMI  = true;  // Xiaomi (Anti-Lost)
