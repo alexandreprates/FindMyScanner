@@ -86,8 +86,8 @@ The scanner operates passively, capturing and decoding BLE advertisements withou
 1. **Clone the repository**
 
    ```bash
-   git clone <repository-url>
-   cd FindMy-Scanner
+   git clone https://github.com/alexandreprates/FindMyScanner.git
+   cd FindMyScanner
    ```
 
 2. **Install dependencies**
