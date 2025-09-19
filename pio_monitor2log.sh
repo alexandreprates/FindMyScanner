@@ -2,6 +2,15 @@
 
 set -e  # Stop script on error
 
+if $(which -s pio); then
+    PLATFORMIO_BIN=$(which pio)
+elif $(which -s platformio); then
+    PLATFORMIO_BIN=$(which platformio)
+else
+    echo "Missing platformio command, check system preferences"
+    exit 1
+fi
+
 # Control variables
 SKIP_UPLOAD=false
 SELECTED_ENV=""
@@ -45,13 +54,13 @@ done
 
 # Function to get the list of available environments
 get_environments() {
-    pio project config | grep "^env:" | sed 's/env://g'
+    $PLATFORMIO_BIN project config | grep "^env:" | sed 's/env://g'
 }
 
 # Function to display environment menu
 show_environment_menu() {
     local envs=("$@")
-    echo "Available environments:"
+    echo "Please select the correct env for the connected board:"
     for i in "${!envs[@]}"; do
         echo "  $((i+1)). ${envs[$i]}"
     done
@@ -91,11 +100,8 @@ validate_environment() {
     return 1
 }
 
-echo "=== Upload and Log Collection Script ==="
-echo
+echo "=== Platformio Monitor to Log ==="
 
-# Get list of environments
-echo "Getting list of configured environments..."
 environments=()
 while IFS= read -r line; do
     environments+=("$line")
@@ -114,7 +120,7 @@ if [ -n "$SELECTED_ENV" ]; then
         echo "Environment specified via --env: $selected_env"
     else
         echo "Error: Environment '$SELECTED_ENV' is not valid"
-        echo "Available environments: ${environments[*]}"
+        echo "Current project envs: ${environments[*]}"
         exit 1
     fi
 else
@@ -133,28 +139,30 @@ else
     done
 fi
 
-echo
-echo "Selected environment: $selected_env"
-echo
-
 # Upload project (if --no-upload was not specified)
 if [ "$SKIP_UPLOAD" = false ]; then
-    echo "=== Uploading project ==="
-    echo "Compiling and uploading to environment: $selected_env"
-    pio run -e "$selected_env" -t upload --silent
-
-    if [ $? -ne 0 ]; then
-        echo "Error: Project upload failed"
-        exit 1
-    fi
-
-    echo
-    echo "Upload completed successfully!"
-    echo
+    while true; do
+        echo ""
+        read -p "Do you want to upload the project? [Y]/n: " choice
+        # Default to 'y' if user just presses Enter
+        choice=${choice:-y}
+        if [[ "$choice" =~ ^[Yy]$ ]]; then
+            echo "Compiling and uploading the project, may take a few seconds."
+            $PLATFORMIO_BIN run -e "$selected_env" -t upload --silent
+            if [ $? -ne 0 ]; then
+                echo "Error: Project upload failed. Aborting!"
+                exit 1
+            fi
+            break
+        elif [[ "$choice" =~ ^[Nn]$ ]]; then
+            echo "Ignoring firmware upload."
+            break
+        else
+            echo "Invalid option. Please enter Y or n."
+        fi
+    done
 else
-    echo "=== Upload skipped (--no-upload specified) ==="
-    echo "Skipping to log collection..."
-    echo
+    echo "Ignoring firmware upload."
 fi
 
 # Generate filename in yyyy-mm-dd-hh-mm.log format
@@ -173,12 +181,12 @@ if [ "$QUIET_MODE" = true ]; then
     echo
 
     # Start serial monitoring saving only to file
-    pio device monitor --quiet -e "$selected_env" > "$LOG_FILE"
+    $PLATFORMIO_BIN device monitor --quiet -e "$selected_env" > "$LOG_FILE"
 else
     echo "Serial output will be displayed on terminal and saved to file"
     echo "Press Ctrl+C to stop collection"
     echo
 
     # Start serial monitoring with tee to display and save
-    pio device monitor --quiet -e "$selected_env" | tee "$LOG_FILE"
+    $PLATFORMIO_BIN device monitor --quiet -e "$selected_env" | tee "$LOG_FILE"
 fi
