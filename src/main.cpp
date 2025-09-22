@@ -5,6 +5,64 @@
 #include <string>
 #include <vector>
 #include <cctype>
+#include <time.h>
+
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  #include <Adafruit_NeoPixel.h>
+#endif
+
+// Output format options:
+enum class OutputFormat {
+  LOG,   // Human-readable log format (default)
+  CSV,   // Comma-separated values
+  YAML   // YAML format
+};
+
+// Output format configuration (can be set via build flags)
+#ifndef OUTPUT_FORMAT_FLAG
+  #define OUTPUT_FORMAT_FLAG 1  // Default: CSV (0=LOG, 1=CSV, 2=YAML)
+#endif
+
+#if OUTPUT_FORMAT_FLAG == 0
+  constexpr OutputFormat OUTPUT_FORMAT = OutputFormat::LOG;
+#elif OUTPUT_FORMAT_FLAG == 1
+  constexpr OutputFormat OUTPUT_FORMAT = OutputFormat::CSV;
+#elif OUTPUT_FORMAT_FLAG == 2
+  constexpr OutputFormat OUTPUT_FORMAT = OutputFormat::YAML;
+#else
+  constexpr OutputFormat OUTPUT_FORMAT = OutputFormat::LOG;
+#endif
+
+// RSSI filter (minimum signal strength to process devices)
+// Can be set via build flags, default is -50
+#ifndef MIN_RSSI_FLAG
+  #define MIN_RSSI_FLAG -50
+#endif
+constexpr int MIN_RSSI = MIN_RSSI_FLAG;
+
+
+#ifndef BUILD_TIME_UNIX
+#define BUILD_TIME_UNIX 0
+#endif
+
+// LED built-in para feedback visual
+#ifndef LED_BUILTIN
+  #if defined(CONFIG_IDF_TARGET_ESP32)
+    #define LED_BUILTIN 2   // GPIO2 no ESP32 DOIT DevKit V1
+  #else
+    #define LED_BUILTIN 2   // Default para compatibilidade
+  #endif
+#endif
+
+// LED WS2812B built-in no ESP32-S3
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  #define WS2812_PIN    48    // Pino do LED WS2812B built-in no ESP32-S3 DevKitC
+  #define WS2812_COUNT  1     // Apenas 1 LED WS2812B
+  #define WS2812_BRIGHTNESS 50 // Brilho (0-255)
+
+  // Instância do NeoPixel
+  Adafruit_NeoPixel neoPixel(WS2812_COUNT, WS2812_PIN, NEO_GRB + NEO_KHZ800);
+#endif
 
 // Company IDs (Bluetooth SIG) — little endian in manufacturer data bytes
 constexpr uint16_t CID_APPLE   = 0x004C;
@@ -26,12 +84,12 @@ constexpr bool FILTER_XIAOMI  = true;  // Xiaomi (Anti-Lost)
 // --------- Helpers ---------
 static inline const char* advTypeName(uint8_t t) {
   switch (t) {
-    case 0: return  "ADV_IND ";
-    case 1: return  "DIR_IND ";
+    case 0: return  "ADV_IND";
+    case 1: return  "DIR_IND";
     case 2: return  "SCAN_IND";
-    case 3: return  "NONCONN ";
+    case 3: return  "NONCONN";
     case 4: return  "SCAN_RSP";
-    default: return "UNKNOWN ";
+    default: return "UNKNOWN";
   }
 }
 
@@ -56,11 +114,11 @@ static uint16_t parseCompanyIdLE(const std::string& mfd) {
 
 static const char* companyName(uint16_t cid) {
   switch (cid) {
-    case CID_APPLE:   return "Apple  ";
-    case CID_GOOGLE:  return "Google ";
+    case CID_APPLE:   return "Apple";
+    case CID_GOOGLE:  return "Google";
     case CID_SAMSUNG: return "Samsung";
-    case CID_XIAOMI:  return "Xiaomi ";
-    default:          return "Other  ";
+    case CID_XIAOMI:  return "Xiaomi";
+    default:          return "Other";
   }
 }
 
@@ -202,9 +260,184 @@ static void printFilterStatus() {
   Serial.println("============================\n");
 }
 
+// Feedback visual para erros usando LED built-in.
+// Mantem o device travado pois a função principal não está disponível
+// Compatível com:
+// - ESP32-S3 DevKitC-1: GPIO48 (LED WS2812B) - Vermelho para erro, Verde para sucesso
+// - ESP32 DOIT DevKit V1: GPIO2 (LED azul)
+static void signalError() {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  // ESP32-S3: Pisca LED vermelho 5 vezes para indicar erro
+  while (true) {
+    neoPixel.setPixelColor(0, neoPixel.Color(255, 0, 0)); // Vermelho
+    neoPixel.show();
+    delay(1000);
+    neoPixel.setPixelColor(0, neoPixel.Color(0, 0, 0));   // Desligado
+    neoPixel.show();
+    delay(1000);
+  }
+#else
+  // ESP32 padrão: Pisca LED built-in 5 vezes rapidamente para indicar erro
+  while (true) {
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(1000);
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(1000);
+  }
+#endif
+}
+
+static void signalSuccess() {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  // ESP32-S3: Acende LED verde por 2 segundos para indicar sucesso
+  neoPixel.setPixelColor(0, neoPixel.Color(0, 255, 0)); // Verde
+  neoPixel.show();
+  delay(2000);
+  neoPixel.setPixelColor(0, neoPixel.Color(0, 0, 0));   // Desligado
+  neoPixel.show();
+#else
+  // ESP32 padrão: Acende LED por 1 segundo para indicar sucesso
+  delay(2000);
+  digitalWrite(LED_BUILTIN, LOW);
+#endif
+}
+
+// Função helper para obter timestamp formatado
+static std::string getCurrentTimestamp() {
+  struct timeval tv;
+  struct tm timeinfo;
+  char timeString[32];
+
+  gettimeofday(&tv, nullptr);
+  localtime_r(&tv.tv_sec, &timeinfo);
+
+  // Formato: YYYY-MM-DD HH:MM:SS.mmm
+  snprintf(timeString, sizeof(timeString), "%04d-%02d-%02d %02d:%02d:%02d.%03ld",
+           timeinfo.tm_year + 1900,
+           timeinfo.tm_mon + 1,
+           timeinfo.tm_mday,
+           timeinfo.tm_hour,
+           timeinfo.tm_min,
+           timeinfo.tm_sec,
+           tv.tv_usec / 1000);
+
+  return std::string(timeString);
+}
+
+// --------- Callback de Scan ---------
+
 // --------- Callback de Scan ---------
 class MyAdvertisedDeviceCallbacks : public NimBLEScanCallbacks {
+private:
+  void formatDeviceAsLog(uint16_t manufacturer, const std::string& deviceType,
+                        const std::string& addr, int rssi, uint8_t advType,
+                        bool isConnectable, bool isScannable, const std::string& dataType,
+                        const std::string& dataHex, const std::string& timestamp,
+                        char* buffer, size_t bufferSize) {
+    // Formatar linha de log no buffer fornecido usando timestamp fornecido
+    snprintf(buffer, bufferSize,
+             "%s | %-8s %-18s | %s | RSSI %03d | PDU %s | %s%-2s | %-12s [%s]\n",
+             timestamp.c_str(),
+             companyName(manufacturer),
+             deviceType.c_str(),
+             addr.c_str(),
+             rssi,
+             advTypeName(advType),
+             isConnectable ? "CONN" : "NONCONN",
+             isScannable ? "/SCAN" : "",
+             dataType.c_str(),
+             dataHex.c_str());
+  }
+
+  void formatDeviceAsCSV(uint16_t manufacturer, const std::string& deviceType,
+                        const std::string& addr, int rssi, uint8_t advType,
+                        bool isConnectable, bool isScannable, const std::string& dataType,
+                        const std::string& dataHex, const std::string& timestamp,
+                        char* buffer, size_t bufferSize) {
+    // Formatar linha CSV no buffer fornecido usando timestamp fornecido
+    snprintf(buffer, bufferSize,
+             "%s,%s,%s,%s,%d,%s,%s,%s,%s,%s\n",
+             timestamp.c_str(),
+             companyName(manufacturer),
+             deviceType.c_str(),
+             addr.c_str(),
+             rssi,
+             advTypeName(advType),
+             isConnectable ? "true" : "false",
+             isScannable ? "true" : "false",
+             dataType.c_str(),
+             dataHex.c_str());
+  }
+
+  void formatDeviceAsYaml(uint16_t manufacturer, const std::string& deviceType,
+                         const std::string& addr, int rssi, uint8_t advType,
+                         bool isConnectable, bool isScannable, const std::string& dataType,
+                         const std::string& dataHex, const std::string& timestamp,
+                         char* buffer, size_t bufferSize) {
+    // Formatar entrada YAML no buffer fornecido usando timestamp fornecido
+    snprintf(buffer, bufferSize,
+      "- device:\n"
+      "    time: %s\n"
+      "    manufacturer: %s\n"
+      "    type: %s\n"
+      "    address: %s\n"
+      "    rssi: %d\n"
+      "    adv_type: %s\n"
+      "    connectable: %s\n"
+      "    scannable: %s\n"
+      "    data_type: %s\n"
+      "    data_hex: %s\n",
+      timestamp.c_str(),
+      companyName(manufacturer),
+      deviceType.c_str(),
+      addr.c_str(),
+      rssi,
+      advTypeName(advType),
+      isConnectable ? "true" : "false",
+      isScannable ? "true" : "false",
+      dataType.c_str(),
+      dataHex.c_str());
+  }
+
+  void printDevice(uint16_t manufacturer, const std::string& deviceType,
+                   const std::string& addr, int rssi, uint8_t advType,
+                   bool isConnectable, bool isScannable, const std::string& dataType,
+                   const std::string& dataHex) {
+    // Obter timestamp uma única vez para consistência e eficiência
+    std::string timestamp = getCurrentTimestamp();
+    char outputBuffer[512];
+
+    switch (OUTPUT_FORMAT) {
+      case OutputFormat::LOG:
+        formatDeviceAsLog(manufacturer, deviceType, addr, rssi, advType,
+                         isConnectable, isScannable, dataType, dataHex, timestamp,
+                         outputBuffer, sizeof(outputBuffer));
+        break;
+      case OutputFormat::CSV:
+        formatDeviceAsCSV(manufacturer, deviceType, addr, rssi, advType,
+                         isConnectable, isScannable, dataType, dataHex, timestamp,
+                         outputBuffer, sizeof(outputBuffer));
+        break;
+      case OutputFormat::YAML:
+        formatDeviceAsYaml(manufacturer, deviceType, addr, rssi, advType,
+                          isConnectable, isScannable, dataType, dataHex, timestamp,
+                          outputBuffer, sizeof(outputBuffer));
+        break;
+    }
+
+    // Único ponto de saída Serial - centralizado
+    Serial.print(outputBuffer);
+    delay(5);
+    Serial.flush();
+  }
+
+public:
   void onResult(const NimBLEAdvertisedDevice* dev) override {
+    // Filter by RSSI - ignore devices with weak signal
+    if (dev->getRSSI() < MIN_RSSI) {
+      return;
+    }
+
     bool foundFindMyDevice = false;
     uint16_t detectedManufacturer = 0xFFFF;
     std::string dataType = "";
@@ -269,26 +502,32 @@ class MyAdvertisedDeviceCallbacks : public NimBLEScanCallbacks {
       const uint8_t advType = dev->getAdvType();
       const bool isConnectable = dev->isConnectable();
 
-      // Extended output format:
-      // "Google FastPair/FindDevice | 7b:59:8d:19:f3:a9 | RSSI -46 | PDU NONCONN | Service [11 01 8D 97 54 8D]"
-      Serial.printf("%-8s %-18s | %s | RSSI %03d | PDU %s | %s%-2s | %-12s [%s]\n",
-                    companyName(detectedManufacturer),
-                    deviceType.c_str(),
-                    addr.c_str(),
-                    rssi,
-                    advTypeName(advType),
-                    isConnectable ? "CONN" : "NONCONN",
-                    dev->isScannable() ? "/SCAN" : "",
-                    dataType.c_str(),
-                    dataHex.c_str());
+      // Use the configured output format
+      printDevice(detectedManufacturer, deviceType, addr, rssi, advType,
+                  isConnectable, dev->isScannable(), dataType, dataHex);
       }
     }
 };
 
 void setup() {
+  struct timeval tv = { .tv_sec = (time_t)BUILD_TIME_UNIX, .tv_usec = 0 };
+  settimeofday(&tv, nullptr);
+
+  // Inicializa LED built-in para feedback visual
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  // ESP32-S3: Inicializa LED WS2812B
+  neoPixel.begin();
+  neoPixel.setBrightness(WS2812_BRIGHTNESS);
+  neoPixel.setPixelColor(0, neoPixel.Color(0, 0, 255)); // blue inicial
+  neoPixel.show();
+#else
+  // ESP32 padrão: Inicializa LED built-in
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
+#endif
+
   Serial.begin(115200);
   while (!Serial) { delay(10); } // USB CDC (S3) — waits for connection to see logs
-  delay(1000);
 
   // Initialize NimBLE
   NimBLEDevice::init("FindMyScanner"); // Scanner device name
@@ -309,24 +548,31 @@ void setup() {
   // Avoid repeating the same advertisement (controlled by controller). true = filter duplicates
   // We set false here because we want to capture ID rotations more easily.
   scan->setDuplicateFilter(false);
-
   scan->setLimitedOnly(false);
+
+  switch (OUTPUT_FORMAT) {
+    case OutputFormat::LOG:
+      printFilterStatus();
+      break;
+    case OutputFormat::CSV:
+      Serial.println("time,manufacturer,deviceType,addr,rssi,advType,isConnectable,isScannable,dataType,dataHex");
+      break;
+    case OutputFormat::YAML:
+      Serial.println("---");
+      break;
+  }
+  Serial.flush();
+  delay(5000);
 
   // Start continuous scanning (0 = no timeout). Non-blocking; callbacks will be called.
   if (!scan->start(0, false)) {
-    Serial.println("BLE scan init FAIL.");
+    signalError();
   } else {
-    Serial.println("BLE scan started!");
+    signalSuccess();
   }
-
-  // Show filter status
-  printFilterStatus();
 }
 
+
 void loop() {
-  // Periodic checkpoint to confirm the system is active
-  static uint32_t last = 0;
-  if (millis() - last > 30000) { // Every 30 seconds
-    last = millis();
-  }
+  delay(100);
 }
