@@ -40,6 +40,32 @@ enum class OutputFormat {
 #endif
 constexpr int MIN_RSSI = MIN_RSSI_FLAG;
 
+// Manufacturer filter configuration (can be set via build flags)
+// Bit mask for individual manufacturers:
+//   0x1 = Apple    (bit 0)
+//   0x2 = Google   (bit 1)
+//   0x4 = Samsung  (bit 2)
+//   0x8 = Xiaomi   (bit 3)
+// Default: 0xF (all manufacturers enabled)
+// Examples of any combination:
+//   -DMANUFACTURES_FLAG=0x1  (only Apple)
+//   -DMANUFACTURES_FLAG=0x2  (only Google)
+//   -DMANUFACTURES_FLAG=0x3  (Apple + Google)
+//   -DMANUFACTURES_FLAG=0x5  (Apple + Samsung)
+//   -DMANUFACTURES_FLAG=0x6  (Google + Samsung)
+//   -DMANUFACTURES_FLAG=0x7  (Apple + Google + Samsung)
+//   -DMANUFACTURES_FLAG=0x8  (only Xiaomi)
+//   -DMANUFACTURES_FLAG=0x9  (Apple + Xiaomi)
+//   -DMANUFACTURES_FLAG=0xA  (Google + Xiaomi)
+//   -DMANUFACTURES_FLAG=0xB  (Apple + Google + Xiaomi)
+//   -DMANUFACTURES_FLAG=0xC  (Samsung + Xiaomi)
+//   -DMANUFACTURES_FLAG=0xD  (Apple + Samsung + Xiaomi)
+//   -DMANUFACTURES_FLAG=0xE  (Google + Samsung + Xiaomi)
+//   -DMANUFACTURES_FLAG=0xF  (all manufacturers - default)
+#ifndef MANUFACTURES_FLAG
+  #define MANUFACTURES_FLAG 0xF
+#endif
+
 
 #ifndef BUILD_TIME_UNIX
 #define BUILD_TIME_UNIX 0
@@ -75,11 +101,11 @@ constexpr uint16_t SVC_GOOGLE_FAST_PAIR  = 0xFEF3; // Google Fast Pair
 constexpr uint16_t SVC_APPLE_FIND_MY     = 0xFD6F; // Apple Find My
 constexpr uint16_t SVC_SAMSUNG_FIND      = 0xFD5A; // Samsung Find
 
-// Filter by Manufacturer type:
-constexpr bool FILTER_APPLE   = true;  // Apple (AirTag, Find My)
-constexpr bool FILTER_GOOGLE  = true;  // Google (Fast Pair)
-constexpr bool FILTER_SAMSUNG = true;  // Samsung (SmartTag)
-constexpr bool FILTER_XIAOMI  = true;  // Xiaomi (Anti-Lost)
+// Filter by Manufacturer type (controlled by MANUFACTURES_FLAG):
+constexpr bool FILTER_APPLE   = (MANUFACTURES_FLAG & 0x1) != 0;  // Apple (AirTag, Find My)
+constexpr bool FILTER_GOOGLE  = (MANUFACTURES_FLAG & 0x2) != 0;  // Google (Fast Pair)
+constexpr bool FILTER_SAMSUNG = (MANUFACTURES_FLAG & 0x4) != 0;  // Samsung (SmartTag)
+constexpr bool FILTER_XIAOMI  = (MANUFACTURES_FLAG & 0x8) != 0;  // Xiaomi (Anti-Lost)
 
 // --------- Helpers ---------
 static inline const char* advTypeName(uint8_t t) {

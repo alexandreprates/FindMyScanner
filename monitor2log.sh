@@ -22,6 +22,7 @@ LOGS_DIR="./logs"
 DEFAULT_FORMAT="csv"
 DEFAULT_UPLOAD="y"
 DEFAULT_MIN_RSSI="-70"
+DEFAULT_MANUFACTURERS="all"
 
 # Global control variables
 SKIP_UPLOAD=false
@@ -29,6 +30,7 @@ SELECTED_ENV=""
 QUIET_MODE=false
 SELECTED_FORMAT=""
 SELECTED_MIN_RSSI=""
+SELECTED_MANUFACTURERS=""
 PLATFORMIO_BIN=""
 
 # ============================================================================
@@ -105,6 +107,20 @@ validate_format() {
     esac
 }
 
+# Validate manufacturer list
+validate_manufacturers() {
+    local manufacturers="$1"
+    local IFS=','
+
+    for manufacturer in $manufacturers; do
+        case "$manufacturer" in
+            Apple|Google|Samsung|Xiaomi|all) ;;
+            *) return 1 ;;
+        esac
+    done
+    return 0
+}
+
 # Validate user choice against available options
 validate_choice() {
     local choice="$1"
@@ -163,6 +179,30 @@ format_to_flag() {
     esac
 }
 
+# Convert manufacturers string to build flag value
+manufacturers_to_flag() {
+    local manufacturers="$1"
+    local flag=0
+    local IFS=','
+
+    # Handle "all" case
+    if [ "$manufacturers" = "all" ]; then
+        echo "0xF"
+        return
+    fi
+
+    for manufacturer in $manufacturers; do
+        case "$manufacturer" in
+            Apple)   flag=$((flag | 1)) ;;    # 0x1
+            Google)  flag=$((flag | 2)) ;;    # 0x2
+            Samsung) flag=$((flag | 4)) ;;    # 0x4
+            Xiaomi)  flag=$((flag | 8)) ;;    # 0x8
+        esac
+    done
+
+    printf "0x%X" "$flag"
+}
+
 # ============================================================================
 # USER INTERFACE FUNCTIONS
 # ============================================================================
@@ -174,18 +214,40 @@ Usage: monitor2log.sh [OPTIONS]
 
 Monitor PlatformIO device output with configurable format options.
 
+WORKFLOW:
+    1. Select environment (ESP32 board type)
+    2. Choose whether to customize firmware settings
+    3. If customizing: configure format, RSSI filter, and manufacturers
+    4. Upload firmware with custom settings (if customization chosen)
+    5. Start monitoring device output
+
 OPTIONS:
-    --env ENVIRONMENT      Specify the environment to use (e.g., esp32-s3)
-    --format FORMAT        Specify output format: log, csv, or yaml
-    --min-rssi=VALUE       Specify minimum RSSI threshold (e.g., --min-rssi=-70)
-    --no-upload           Skip upload process and go directly to monitoring
-    --quiet               Save logs only to file, without terminal display
-    -h, --help            Show this help message and exit
+    --env ENVIRONMENT         Specify the environment to use (e.g., esp32-s3)
+    --format FORMAT           Specify output format: log, csv, or yaml
+                             (triggers firmware customization if provided)
+    --min-rssi=VALUE          Specify minimum RSSI threshold (e.g., --min-rssi=-70)
+                             (triggers firmware customization if provided)
+    --manufacturer=LIST       Specify manufacturers to filter (comma-separated)
+                             Valid values: Apple, Google, Samsung, Xiaomi, all
+                             Examples: --manufacturer=Apple,Google
+                                      --manufacturer=all (default)
+                             (triggers firmware customization if provided)
+    --no-upload              Skip firmware customization and upload, use existing firmware
+    --quiet                  Save logs only to file, without terminal display
+    -h, --help               Show this help message and exit
 
 EXAMPLES:
-    ./monitor2log.sh --env esp32-s3 --format csv --min-rssi=-70
-    ./monitor2log.sh --format yaml --quiet --min-rssi=-80
-    ./monitor2log.sh --no-upload --env esp32-wroom --min-rssi=-60
+    # Interactive mode - will ask for customization
+    ./monitor2log.sh
+
+    # Custom firmware with specific settings
+    ./monitor2log.sh --env esp32-s3 --format csv --min-rssi=-70 --manufacturer=Apple,Google
+
+    # Use existing firmware without upload
+    ./monitor2log.sh --no-upload --env esp32-wroom
+
+    # Quiet monitoring with custom settings
+    ./monitor2log.sh --format yaml --quiet --min-rssi=-80 --manufacturer=Samsung
 
 For more information, visit: https://github.com/alexandreprates/FindMyScanner
 EOF
@@ -193,7 +255,6 @@ EOF
 
 # Display environment selection menu
 show_environment_menu() {
-    echo >&2
     echo "Available environments:" >&2
     local i=1
     for env in "$@"; do
@@ -285,20 +346,9 @@ select_environment() {
     done
 }
 
-# Handle format selection (interactive or from arguments)
+# Handle format selection (interactive only - command line args handled in main)
 select_format() {
     debug "Starting format selection"
-
-    # Use command line argument if provided
-    if [ -n "$SELECTED_FORMAT" ]; then
-        if validate_format "$SELECTED_FORMAT"; then
-            info "Using format from command line: $SELECTED_FORMAT" >&2
-            echo "$SELECTED_FORMAT"
-            return
-        else
-            error_exit "Invalid format '$SELECTED_FORMAT'. Valid options: log, csv, yaml"
-        fi
-    fi
 
     # Interactive selection
     show_format_menu
@@ -306,10 +356,10 @@ select_format() {
     # Get user choice
     while true; do
         local prompt="Choose output format (1-3)"
-        printf "%s: " "$prompt" >&2
+        printf "%s [2]: " "$prompt" >&2
 
         read choice
-        choice=${choice:-$default_choice}
+        choice=${choice:-2}
 
         case "$choice" in
             1) echo "log"; return ;;
@@ -320,38 +370,141 @@ select_format() {
     done
 }
 
-# Handle MIN_RSSI selection (interactive or from arguments)
+# Handle MIN_RSSI selection (interactive only - command line args handled in main)
 select_min_rssi() {
     debug "Starting MIN_RSSI selection"
-
-    # Use command line argument if provided
-    if [ -n "$SELECTED_MIN_RSSI" ]; then
-        info "Using MIN_RSSI from command line: $SELECTED_MIN_RSSI" >&2
-        echo "$SELECTED_MIN_RSSI"
-        return
-    fi
 
     # Interactive selection
     echo >&2
     echo "MIN_RSSI Filter Configuration:" >&2
-    echo "This value sets the minimum RSSI threshold for device detection." >&2
-    echo "Common values: -40 (close), -60 (medium), -80 (far), -100 (very far)" >&2
+    echo "Select signal strength threshold for device detection:" >&2
+    echo "  0 -> NO-FILTER (accept all signals)" >&2
+    echo "  1 -> -10 dBm   (very close)" >&2
+    echo "  2 -> -20 dBm   (close)" >&2
+    echo "  3 -> -30 dBm   (near)" >&2
+    echo "  4 -> -40 dBm   (medium-close)" >&2
+    echo "  5 -> -50 dBm   (medium)" >&2
+    echo "  6 -> -60 dBm   (medium-far)" >&2
+    echo "  7 -> -70 dBm   (far - default)" >&2
+    echo "  8 -> -80 dBm   (distant)" >&2
+    echo "  9 -> -100 dBm  (extremely distant)" >&2
     echo >&2
 
     # Get user input
     while true; do
-        local prompt="Enter MIN_RSSI value"
-        printf "%s [%s]: " "$prompt" "$DEFAULT_MIN_RSSI" >&2
+        local prompt="Choose signal strength level (0-9)"
+        printf "%s [7]: " "$prompt" >&2
 
-        read rssi_input
-        rssi_input=${rssi_input:-$DEFAULT_MIN_RSSI}
+        read rssi_choice
+        rssi_choice=${rssi_choice:-7}
 
-        if is_integer "$rssi_input"; then
-            echo "$rssi_input"
+        # Convert choice to RSSI value
+        case "$rssi_choice" in
+            0) echo "-200"; return ;;  # NO-FILTER
+            1) echo "-10"; return ;;
+            2) echo "-20"; return ;;
+            3) echo "-30"; return ;;
+            4) echo "-40"; return ;;
+            5) echo "-50"; return ;;
+            6) echo "-60"; return ;;
+            7) echo "-70"; return ;;
+            8) echo "-80"; return ;;
+            9) echo "-100"; return ;;
+            *) echo "Invalid choice. Please enter a number between 0 and 9." >&2 ;;
+        esac
+    done
+}
+
+# Handle manufacturers selection (interactive only - command line args handled in main)
+select_manufacturers() {
+    debug "Starting manufacturers selection"
+
+    # Interactive selection
+    echo >&2
+    echo "Manufacturer Filter Configuration:" >&2
+    echo "Select which manufacturers to monitor:" >&2
+    echo "  1. Apple    (AirTag, Find My)" >&2
+    echo "  2. Google   (Fast Pair)" >&2
+    echo "  3. Samsung  (SmartTag)" >&2
+    echo "  4. Xiaomi   (Anti-Lost)" >&2
+    echo "  5. all      (All manufacturers - default)" >&2
+    echo >&2
+    echo "You can enter multiple numbers separated by commas (e.g., 1,2,4)" >&2
+    echo >&2
+
+    # Get user input
+    while true; do
+        local prompt="Choose manufacturers (1-5 or combinations)"
+        printf "%s [5]: " "$prompt" >&2
+
+        read manufacturers_input
+        manufacturers_input=${manufacturers_input:-5}
+
+        # Convert numbers to manufacturer names
+        local selected_manufacturers=""
+        local IFS=','
+
+        for choice in $manufacturers_input; do
+            case "$choice" in
+                1) selected_manufacturers="${selected_manufacturers}${selected_manufacturers:+,}Apple" ;;
+                2) selected_manufacturers="${selected_manufacturers}${selected_manufacturers:+,}Google" ;;
+                3) selected_manufacturers="${selected_manufacturers}${selected_manufacturers:+,}Samsung" ;;
+                4) selected_manufacturers="${selected_manufacturers}${selected_manufacturers:+,}Xiaomi" ;;
+                5) selected_manufacturers="all"; break ;;
+                *) echo "Invalid choice: $choice. Please enter numbers 1-5." >&2; continue 2 ;;
+            esac
+        done
+
+        if [ -n "$selected_manufacturers" ]; then
+            echo "$selected_manufacturers"
             return
         else
-            echo "Invalid value. Please enter an integer (e.g., -70, -80, -60)." >&2
+            echo "Please select at least one manufacturer." >&2
         fi
+    done
+}
+
+# Ask if user wants to customize firmware
+ask_firmware_customization() {
+    debug "Starting firmware customization question"
+
+    # If arguments were provided via command line, consider as customization
+    if [ -n "$SELECTED_FORMAT" ] || [ -n "$SELECTED_MIN_RSSI" ] || [ -n "$SELECTED_MANUFACTURERS" ]; then
+        info "Using custom firmware settings from command line" >&2
+        echo "y"
+        return
+    fi
+
+    # If --no-upload was specified, skip customization
+    if [ "$SKIP_UPLOAD" = "true" ]; then
+        info "Skipping firmware customization (--no-upload specified)" >&2
+        echo "n"
+        return
+    fi
+
+    # Interactive question
+    while true; do
+        echo >&2
+        local prompt="Do you want to customize firmware settings (format, RSSI filter, manufacturers)?"
+        prompt="$prompt [Y/n]"
+        printf "%s: " "$prompt" >&2
+
+        read choice
+        choice=${choice:-"y"}
+
+        case "$choice" in
+            [Yy]*)
+                echo "y"
+                return
+                ;;
+            [Nn]*)
+                echo "n"
+                return
+                ;;
+            *)
+                echo "Please enter Y or N." >&2
+                ;;
+        esac
     done
 }
 
@@ -364,39 +517,54 @@ handle_upload() {
     local env="$1"
     local format="$2"
     local min_rssi="$3"
+    local manufacturers="$4"
 
-    debug "Starting upload process for env=$env format=$format min_rssi=$min_rssi"
+    debug "Starting upload process for env=$env format=$format min_rssi=$min_rssi manufacturers=$manufacturers"
 
     if [ "$SKIP_UPLOAD" = "true" ]; then
         info "Skipping firmware upload (--no-upload specified)" >&2
-        echo "n"
-        return
+        return 1
     fi
 
     # Get user confirmation
     while true; do
         echo >&2
-        local prompt="Upload firmware with $format format and MIN_RSSI=$min_rssi?"
+        local prompt="Upload firmware with $format format, MIN_RSSI=$min_rssi, and manufacturers=$manufacturers ?"
             prompt="$prompt [Y/n]"
         printf "%s: " "$prompt" >&2
 
         read choice
-        choice=${choice:-$default_upload}
+        choice=${choice:-$DEFAULT_UPLOAD}
 
         case "$choice" in
             [Yy]*)
-                if perform_upload "$env" "$format" "$min_rssi"; then
+                if perform_upload "$env" "$format" "$min_rssi" "$manufacturers"; then
                     info "Firmware upload completed successfully" >&2
-                    echo "y"
-                    return
+                    return 0
                 else
                     error_exit "Firmware upload failed"
                 fi
                 ;;
             [Nn]*)
-                info "Skipping firmware upload" >&2
-                echo "n"
-                return
+                echo "Would you like to change the configuration?" >&2
+                printf "Change settings? [Y/n]: " >&2
+                read change_choice
+                change_choice=${change_choice:-"y"}
+
+                case "$change_choice" in
+                    [Yy]*)
+                        info "Returning to configuration menu..." >&2
+                        return 2  # Special return code to indicate reconfiguration needed
+                        ;;
+                    [Nn]*)
+                        info "Proceeding with existing firmware (may have different settings)" >&2
+                        return 1
+                        ;;
+                    *)
+                        echo "Please enter Y or N." >&2
+                        continue
+                        ;;
+                esac
                 ;;
             *)
                 echo "Please enter Y or N." >&2
@@ -410,17 +578,28 @@ perform_upload() {
     local env="$1"
     local format="$2"
     local min_rssi="$3"
+    local manufacturers="$4"
     local format_flag
+    local manufacturers_flag
 
     format_flag=$(format_to_flag "$format")
+    manufacturers_flag=$(manufacturers_to_flag "$manufacturers")
 
     info "Compiling and uploading firmware..."
 
     # Set build flags via environment variable
-    export PLATFORMIO_BUILD_FLAGS="-DOUTPUT_FORMAT_FLAG=$format_flag -DMIN_RSSI_FLAG=$min_rssi"
+    export PLATFORMIO_BUILD_FLAGS="-DOUTPUT_FORMAT_FLAG=$format_flag -DMIN_RSSI_FLAG=$min_rssi -DMANUFACTURES_FLAG=$manufacturers_flag"
 
-    # Perform upload
-    if $PLATFORMIO_BIN run -e "$env" -t upload --silent; then
+    # First compile the project
+    info "Compiling project for environment: $env"
+    if ! $PLATFORMIO_BIN run -e "$env" --silent; then
+        error_exit "Compilation failed for environment: $env"
+    fi
+
+    # Then perform upload
+    info "Uploading firmware to device..."
+    # if $PLATFORMIO_BIN run -e "$env" -t upload --silent; then
+    if $PLATFORMIO_BIN run -e "$env" -t upload; then
         return 0
     else
         return 1
@@ -436,8 +615,9 @@ start_monitoring() {
     local env="$1"
     local format="$2"
     local min_rssi="$3"
+    local manufacturers="$4"
 
-    debug "Starting monitoring for env=$env format=$format min_rssi=$min_rssi"
+    debug "Starting monitoring for env=$env format=$format min_rssi=$min_rssi manufacturers=$manufacturers"
 
     # Create logs directory
     mkdir -p "$LOGS_DIR"
@@ -452,6 +632,7 @@ start_monitoring() {
     info "Environment: $env"
     info "Format: $format"
     info "MIN_RSSI: $min_rssi"
+    info "Manufacturers: $manufacturers"
     info "Log file: $log_file"
     echo
 
@@ -516,6 +697,17 @@ process_arguments() {
                     error_exit "--min-rssi must be an integer (e.g., -70, -80, -60)"
                 fi
                 ;;
+            --manufacturer=*)
+                local manufacturers_value="${1#--manufacturer=}"
+                if [ -z "$manufacturers_value" ]; then
+                    error_exit "--manufacturer requires a value (e.g., --manufacturer=Apple,Google)"
+                elif validate_manufacturers "$manufacturers_value"; then
+                    SELECTED_MANUFACTURERS="$manufacturers_value"
+                    shift
+                else
+                    error_exit "--manufacturer must contain valid values: Apple, Google, Samsung, Xiaomi, all"
+                fi
+                ;;
             -h|--help)
                 show_help
                 exit 0
@@ -533,25 +725,93 @@ process_arguments() {
 
 # Main execution function
 main() {
-    echo "=== PlatformIO Monitor to Log ==="
-    echo
+    echo "=== Monitor to Log ==="
 
     # Setup and validation
     setup_platformio
 
-    # Interactive selections
+    # Step 1: Select environment
     local selected_env
-    local selected_format
-    local selected_min_rssi
-    local upload_choice
-
     selected_env=$(select_environment)
-    selected_format=$(select_format)
-    selected_min_rssi=$(select_min_rssi)
-    upload_choice=$(handle_upload "$selected_env" "$selected_format" "$selected_min_rssi")
 
-    # Start monitoring
-    start_monitoring "$selected_env" "$selected_format" "$selected_min_rssi"
+    # Configuration loop - allows user to return and reconfigure
+    while true; do
+        # Step 2: Ask if user wants to customize firmware
+        local customize_firmware
+        customize_firmware=$(ask_firmware_customization)
+
+        # Step 3: Collect settings (either from command line or interactive)
+        local selected_format="$DEFAULT_FORMAT"
+        local selected_min_rssi="$DEFAULT_MIN_RSSI"
+        local selected_manufacturers="$DEFAULT_MANUFACTURERS"
+
+        if [ "$customize_firmware" = "y" ]; then
+            # Use command line arguments if provided, otherwise ask interactively
+            if [ -n "$SELECTED_FORMAT" ]; then
+                selected_format="$SELECTED_FORMAT"
+                info "Using format from command line: $selected_format" >&2
+            else
+                selected_format=$(select_format)
+            fi
+
+            if [ -n "$SELECTED_MIN_RSSI" ]; then
+                selected_min_rssi="$SELECTED_MIN_RSSI"
+                info "Using MIN_RSSI from command line: $selected_min_rssi" >&2
+            else
+                selected_min_rssi=$(select_min_rssi)
+            fi
+
+            if [ -n "$SELECTED_MANUFACTURERS" ]; then
+                selected_manufacturers="$SELECTED_MANUFACTURERS"
+                info "Using manufacturers from command line: $selected_manufacturers" >&2
+            else
+                selected_manufacturers=$(select_manufacturers)
+            fi
+
+            # Step 4: Upload firmware with custom settings
+            local upload_result
+            handle_upload "$selected_env" "$selected_format" "$selected_min_rssi" "$selected_manufacturers"
+            upload_result=$?
+
+            case $upload_result in
+                0)
+                    info "Using uploaded firmware with custom settings" >&2
+                    break  # Exit configuration loop, proceed to monitoring
+                    ;;
+                1)
+                    info "Using existing firmware (may have different settings)" >&2
+                    break  # Exit configuration loop, proceed to monitoring
+                    ;;
+                2)
+                    # User wants to reconfigure - clear command line arguments for interactive mode
+                    SELECTED_FORMAT=""
+                    SELECTED_MIN_RSSI=""
+                    SELECTED_MANUFACTURERS=""
+                    echo >&2
+                    info "=== Reconfiguring firmware settings ===" >&2
+                    continue  # Return to configuration loop
+                    ;;
+            esac
+        else
+            # Use defaults/command line args but skip upload
+            if [ -n "$SELECTED_FORMAT" ]; then
+                selected_format="$SELECTED_FORMAT"
+            fi
+            if [ -n "$SELECTED_MIN_RSSI" ]; then
+                selected_min_rssi="$SELECTED_MIN_RSSI"
+            fi
+            if [ -n "$SELECTED_MANUFACTURERS" ]; then
+                selected_manufacturers="$SELECTED_MANUFACTURERS"
+            fi
+
+            info "Using firmware settings: format=$selected_format, MIN_RSSI=$selected_min_rssi, manufacturers=$selected_manufacturers" >&2
+            info "Note: These settings may not match the actual firmware if no upload was performed" >&2
+            break  # Exit configuration loop, proceed to monitoring
+        fi
+    done
+
+    # Step 5: Start monitoring
+    start_monitoring "$selected_env" "$selected_format" "$selected_min_rssi" "$selected_manufacturers"
 }
 
 # ============================================================================
