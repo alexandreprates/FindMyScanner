@@ -20,7 +20,7 @@ enum class OutputFormat {
 
 // Output format configuration (can be set via build flags)
 #ifndef OUTPUT_FORMAT_FLAG
-  #define OUTPUT_FORMAT_FLAG 1  // Default: CSV (0=LOG, 1=CSV, 2=YAML)
+  #define OUTPUT_FORMAT_FLAG 0  // Default: LOG (0=LOG, 1=CSV, 2=YAML)
 #endif
 
 #if OUTPUT_FORMAT_FLAG == 0
@@ -36,7 +36,7 @@ enum class OutputFormat {
 // RSSI filter (minimum signal strength to process devices)
 // Can be set via build flags, default is -50
 #ifndef MIN_RSSI_FLAG
-  #define MIN_RSSI_FLAG -50
+  #define MIN_RSSI_FLAG -200
 #endif
 constexpr int MIN_RSSI = MIN_RSSI_FLAG;
 
@@ -218,11 +218,15 @@ static bool isFindMyDevice(uint16_t cid, const std::string& mfd) {
 
     case CID_SAMSUNG:
       // Samsung SmartTag uses specific types of manufacturer data
-      return (mfd.size() >= 4 && ((uint8_t)mfd[2] == 0x01 || (uint8_t)mfd[2] == 0x02));
+      return (mfd.size() >= 4 && ((uint8_t)mfd[2] == 0x01 || (uint8_t)mfd[2] == 0x02 || (uint8_t)mfd[2] == 0x42));
 
     case CID_XIAOMI:
-      // Xiaomi Anti-Lost: specific ad types
-      return (mfd.size() >= 3 && (uint8_t)mfd[2] == 0x30);
+      // Xiaomi devices: multiple ad types
+      return (mfd.size() >= 3 &&
+              ((uint8_t)mfd[2] == 0x30 ||  // Anti-Lost original
+               (uint8_t)mfd[2] == 0x23 ||  // Mi-Device/Tracker
+               (uint8_t)mfd[2] == 0x20 ||  // Mi-Tag
+               (uint8_t)mfd[2] == 0x10));  // Generic Mi-Device
 
     default:
       return false;
@@ -252,12 +256,16 @@ static const char* getFindMyType(uint16_t cid, const std::string& mfd) {
       switch (type) {
         case 0x01: return "SmartTag";
         case 0x02: return "SmartTag+";
+        case 0x42: return "SmartTag-Pro";
         default: return "SmartTag/Other";
       }
 
     case CID_XIAOMI:
       switch (type) {
         case 0x30: return "Anti-Lost";
+        case 0x23: return "Mi-Tracker";
+        case 0x20: return "Mi-Tag";
+        case 0x10: return "Mi-Device";
         default: return "FindMy/Other";
       }
 
@@ -453,7 +461,6 @@ private:
 
     // Único ponto de saída Serial - centralizado
     Serial.print(outputBuffer);
-    delay(5);
     Serial.flush();
   }
 
