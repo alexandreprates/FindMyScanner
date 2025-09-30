@@ -461,6 +461,7 @@ private:
 
     // Único ponto de saída Serial - centralizado
     Serial.print(outputBuffer);
+    delay(10); // Pequena pausa para evitar sobrecarga do buffer Serial
     Serial.flush();
   }
 
