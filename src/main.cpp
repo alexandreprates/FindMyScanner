@@ -35,7 +35,7 @@ void setup() {
   scan->setScanCallbacks(new MyAdvertisedDeviceCallbacks(), /*wantDuplicates=*/true);
 
   // Active scan to get scan responses (more data)
-  scan->setActiveScan(true);
+  scan->setActiveScan(false);
 
   // Aggressive scan parameters for maximum capture (units of 0.625 ms)
   // Minimum interval/window for fastest scanning
@@ -45,6 +45,7 @@ void setup() {
   // Capture all advertisements including duplicates
   scan->setDuplicateFilter(false);
   scan->setLimitedOnly(false);
+  scan->setFilterPolicy(BLE_HCI_SCAN_FILT_NO_WL);
 
   // Set maximum scan response timeout
   scan->setMaxResults(0); // 0 = unlimited results
