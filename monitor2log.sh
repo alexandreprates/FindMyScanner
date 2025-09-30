@@ -598,8 +598,7 @@ perform_upload() {
 
     # Then perform upload
     info "Uploading firmware to device..."
-    # if $PLATFORMIO_BIN run -e "$env" -t upload --silent; then
-    if $PLATFORMIO_BIN run -e "$env" -t upload; then
+    if $PLATFORMIO_BIN run -e "$env" -t upload --silent; then
         return 0
     else
         return 1
@@ -725,7 +724,7 @@ process_arguments() {
 
 # Main execution function
 main() {
-    echo "=== Monitor to Log ==="
+    echo "=== Monitor to Log Settings ==="
 
     # Setup and validation
     setup_platformio
