@@ -9,7 +9,7 @@
 # Date: 2025-09-22
 # ============================================================================
 
-# set -x  # Stop on error
+#set -x  # Set debug mode for detailed execution tracing
 
 # ============================================================================
 # CONSTANTS AND GLOBAL VARIABLES
@@ -32,6 +32,7 @@ SELECTED_FORMAT=""
 SELECTED_MIN_RSSI=""
 SELECTED_MANUFACTURERS=""
 PLATFORMIO_BIN=""
+COMMAND_EQUIVALENT_SHOWN=false
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -216,10 +217,11 @@ Monitor PlatformIO device output with configurable format options.
 
 WORKFLOW:
     1. Select environment (ESP32 board type)
-    2. Choose whether to customize firmware settings
-    3. If customizing: configure format, RSSI filter, and manufacturers
-    4. Upload firmware with custom settings (if customization chosen)
-    5. Start monitoring device output
+    2. Choose output mode (normal or quiet)
+    3. Choose whether to customize firmware settings
+    4. If customizing: configure format, RSSI filter, and manufacturers
+    5. Upload firmware with custom settings (if customization chosen)
+    6. Start monitoring device output
 
 OPTIONS:
     --env ENVIRONMENT         Specify the environment to use (e.g., esp32-s3)
@@ -234,19 +236,20 @@ OPTIONS:
                              (triggers firmware customization if provided)
     --no-upload              Skip firmware customization and upload, use existing firmware
     --quiet                  Save logs only to file, without terminal display
+                             (if not specified, will be asked interactively)
     -h, --help               Show this help message and exit
 
 EXAMPLES:
-    # Interactive mode - will ask for customization
+    # Interactive mode - will ask for customization and output mode
     ./monitor2log.sh
 
     # Custom firmware with specific settings
     ./monitor2log.sh --env esp32-s3 --format csv --min-rssi=-70 --manufacturer=Apple,Google
 
-    # Use existing firmware without upload
+    # Use existing firmware without upload (will still ask about output mode)
     ./monitor2log.sh --no-upload --env esp32-wroom
 
-    # Quiet monitoring with custom settings
+    # Quiet monitoring with custom settings (skip interactive output mode question)
     ./monitor2log.sh --format yaml --quiet --min-rssi=-80 --manufacturer=Samsung
 
 For more information, visit: https://github.com/alexandreprates/FindMyScanner
@@ -271,6 +274,43 @@ show_format_menu() {
     echo "  1. log  (Human-readable log format)" >&2
     echo "  2. csv  (Comma-separated values)" >&2
     echo "  3. yaml (YAML format)" >&2
+    echo >&2
+}
+
+# Show command line equivalent for the selected configuration
+show_command_equivalent() {
+    local env="$1"
+    local format="$2"
+    local min_rssi="$3"
+    local manufacturers="$4"
+
+    echo >&2
+    echo "=== Command Line Equivalent ===" >&2
+    echo "To replicate these settings in the future, use:" >&2
+
+    local cmd="./monitor2log.sh --env $env"
+
+    # Add format if not default
+    if [ "$format" != "$DEFAULT_FORMAT" ]; then
+        cmd="$cmd --format $format"
+    fi
+
+    # Add min-rssi if not default
+    if [ "$min_rssi" != "$DEFAULT_MIN_RSSI" ]; then
+        cmd="$cmd --min-rssi=$min_rssi"
+    fi
+
+    # Add manufacturer if not default
+    if [ "$manufacturers" != "$DEFAULT_MANUFACTURERS" ]; then
+        cmd="$cmd --manufacturer=$manufacturers"
+    fi
+
+    # Add quiet mode if enabled
+    if [ "$QUIET_MODE" = "true" ]; then
+        cmd="$cmd --quiet"
+    fi
+
+    echo "  $cmd" >&2
     echo >&2
 }
 
@@ -508,6 +548,47 @@ ask_firmware_customization() {
     done
 }
 
+# Ask if user wants to use quiet mode
+ask_quiet_mode() {
+    debug "Starting quiet mode question"
+
+    # If --quiet was specified via command line, use it
+    if [ "$QUIET_MODE" = "true" ]; then
+        info "Using quiet mode from command line" >&2
+        echo "y"
+        return
+    fi
+
+    # Interactive question
+    while true; do
+        echo >&2
+        echo "Output Mode Configuration:" >&2
+        echo "  Normal: Display logs on terminal AND save to file" >&2
+        echo "  Quiet:  Save logs only to file (no terminal display)" >&2
+        echo >&2
+        local prompt="Do you want to use quiet mode (logs only to file)?"
+        prompt="$prompt [y/N]"
+        printf "%s: " "$prompt" >&2
+
+        read choice
+        choice=${choice:-"n"}
+
+        case "$choice" in
+            [Yy]*)
+                echo "y"
+                return
+                ;;
+            [Nn]*)
+                echo "n"
+                return
+                ;;
+            *)
+                echo "Please enter Y or N." >&2
+                ;;
+        esac
+    done
+}
+
 # ============================================================================
 # UPLOAD FUNCTIONS
 # ============================================================================
@@ -538,6 +619,10 @@ handle_upload() {
 
         case "$choice" in
             [Yy]*)
+                # Show command line equivalent before upload
+                show_command_equivalent "$env" "$format" "$min_rssi" "$manufacturers"
+                COMMAND_EQUIVALENT_SHOWN=true
+
                 if perform_upload "$env" "$format" "$min_rssi" "$manufacturers"; then
                     info "Firmware upload completed successfully" >&2
                     return 0
@@ -590,7 +675,11 @@ perform_upload() {
     # Set build flags via environment variable
     export PLATFORMIO_BUILD_FLAGS="-DOUTPUT_FORMAT_FLAG=$format_flag -DMIN_RSSI_FLAG=$min_rssi -DMANUFACTURES_FLAG=$manufacturers_flag"
 
-    # First compile the project
+    info "Cleaning previous builds..."
+    if ! $PLATFORMIO_BIN run -e "$env" -t clean --silent; then
+        error_exit "Clean failed for environment: $env"
+    fi
+
     info "Compiling project for environment: $env"
     if ! $PLATFORMIO_BIN run -e "$env" --silent; then
         error_exit "Compilation failed for environment: $env"
@@ -640,12 +729,12 @@ start_monitoring() {
         info "Quiet mode - logs saved to file only"
         echo "Press Ctrl+C to stop monitoring"
         echo
-        $PLATFORMIO_BIN device monitor --no-reconnect --quiet -e "$env" > "$log_file"
+        $PLATFORMIO_BIN device monitor --no-reconnect --quiet -e "$env" --filter printable > "$log_file"
     else
         info "Logs displayed on terminal and saved to file"
         echo "Press Ctrl+C to stop monitoring"
         echo
-        $PLATFORMIO_BIN device monitor --no-reconnect --quiet -e "$env" | tee "$log_file"
+        $PLATFORMIO_BIN device monitor --no-reconnect --quiet -e "$env" --filter printable | tee "$log_file"
     fi
 }
 
@@ -733,13 +822,24 @@ main() {
     local selected_env
     selected_env=$(select_environment)
 
+    # Step 2: Ask about quiet mode (unless already set via command line)
+    local use_quiet_mode
+    use_quiet_mode=$(ask_quiet_mode)
+
+    if [ "$use_quiet_mode" = "y" ]; then
+        QUIET_MODE=true
+        info "Quiet mode enabled - logs will be saved to file only" >&2
+    else
+        info "Normal mode enabled - logs will be displayed on terminal and saved to file" >&2
+    fi
+
     # Configuration loop - allows user to return and reconfigure
     while true; do
-        # Step 2: Ask if user wants to customize firmware
+        # Step 3: Ask if user wants to customize firmware
         local customize_firmware
         customize_firmware=$(ask_firmware_customization)
 
-        # Step 3: Collect settings (either from command line or interactive)
+        # Step 4: Collect settings (either from command line or interactive)
         local selected_format="$DEFAULT_FORMAT"
         local selected_min_rssi="$DEFAULT_MIN_RSSI"
         local selected_manufacturers="$DEFAULT_MANUFACTURERS"
@@ -767,7 +867,7 @@ main() {
                 selected_manufacturers=$(select_manufacturers)
             fi
 
-            # Step 4: Upload firmware with custom settings
+            # Step 5: Upload firmware with custom settings
             local upload_result
             handle_upload "$selected_env" "$selected_format" "$selected_min_rssi" "$selected_manufacturers"
             upload_result=$?
@@ -809,7 +909,12 @@ main() {
         fi
     done
 
-    # Step 5: Start monitoring
+    # Show command line equivalent for future reference (if not already shown)
+    if [ "$COMMAND_EQUIVALENT_SHOWN" = "false" ]; then
+        show_command_equivalent "$selected_env" "$selected_format" "$selected_min_rssi" "$selected_manufacturers"
+    fi
+
+    # Step 6: Start monitoring
     start_monitoring "$selected_env" "$selected_format" "$selected_min_rssi" "$selected_manufacturers"
 }
 
