@@ -6,6 +6,7 @@
 #include <vector>
 #include <cctype>
 #include <time.h>
+#include <esp_system.h>
 
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   #include <Adafruit_NeoPixel.h>
@@ -34,7 +35,7 @@ enum class OutputFormat {
 #endif
 
 // RSSI filter (minimum signal strength to process devices)
-// Can be set via build flags, default is -50
+// Can be set via build flags, default is -200
 #ifndef MIN_RSSI_FLAG
   #define MIN_RSSI_FLAG -200
 #endif
@@ -370,13 +371,13 @@ private:
                         char* buffer, size_t bufferSize) {
     // Formatar linha de log no buffer fornecido usando timestamp fornecido
     snprintf(buffer, bufferSize,
-             "%s | %-8s %-18s | %s | RSSI %03d | PDU %s | %s%-2s | %-12s [%s]\n",
+             "%s | 0x%04X %-18s | %s | RSSI %03d | PDU %d | %s%-2s | %-12s [%s]\n",
              timestamp.c_str(),
-             companyName(manufacturer),
+             manufacturer,
              deviceType.c_str(),
              addr.c_str(),
              rssi,
-             advTypeName(advType),
+             advType,
              isConnectable ? "CONN" : "NONCONN",
              isScannable ? "/SCAN" : "",
              dataType.c_str(),
@@ -544,15 +545,22 @@ public:
 };
 
 void setup() {
-  struct timeval tv = { .tv_sec = (time_t)BUILD_TIME_UNIX, .tv_usec = 0 };
-  settimeofday(&tv, nullptr);
+  // Get reset reason
+  esp_reset_reason_t reset_reason = esp_reset_reason();
 
-  // Inicializa LED built-in para feedback visual
+  // Set build time only on POWERON_RESET, else keep previous RTC
+  if (reset_reason == ESP_RST_POWERON) {
+    struct timeval tv = { .tv_sec = (time_t)BUILD_TIME_UNIX, .tv_usec = 0 };
+    settimeofday(&tv, nullptr);
+  }
+  // In other cases (software reset, watchdog, etc.), keep current RTC
+
+  // Initialize built-in LED for visual feedback
 #ifdef CONFIG_IDF_TARGET_ESP32S3
-  // ESP32-S3: Inicializa LED WS2812B
+  // ESP32-S3: Initialize WS2812B LED
   neoPixel.begin();
   neoPixel.setBrightness(WS2812_BRIGHTNESS);
-  neoPixel.setPixelColor(0, neoPixel.Color(0, 0, 255)); // blue inicial
+  neoPixel.setPixelColor(0, neoPixel.Color(0, 0, 255)); // blue initial
   neoPixel.show();
 #else
   // ESP32 padrão: Inicializa LED built-in
@@ -605,7 +613,6 @@ void setup() {
     signalSuccess();
   }
 }
-
 
 void loop() {
   delay(100);
